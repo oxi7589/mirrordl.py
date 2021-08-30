@@ -1,4 +1,4 @@
-# v.2021-08-02-b
+# v.2021-08-30
 # requires-interpreter: CPython3.5+
 # requires-lib: beautifulsoup4, requests
 # example-use: python3 ./mirrordl.py "https://5ur3kg.gq/?dir=public/Betm/15007%20%E5%AE%BFX%E8%99%8E"
@@ -16,6 +16,7 @@ from os import mkdir
 from sys import argv
 from time import sleep
 from urllib.parse import urljoin, urlparse, unquote
+import re
 
 def mkdir_if_not_exists(d):
 	try:
@@ -76,8 +77,20 @@ def get_bs4_html(url, session):
 			fails += 1
 	raise Exception("Can't get {}".format(url))
 
-def proc_url(url, base_netloc, session):
+def matches_conditions(params, url):
+	if not 'regex' in params.keys():
+		return True
+	if not 'regexc' in params.keys():
+		params['regexc'] = re.compile(params['regex'])
+	regex_c = params['regexc']
+	match = regex_c.search(url)
+	if not 'condition' in params.keys():
+		return bool(match)
+	return bool(eval(params['condition']))
+
+def proc_url(url, params, session):
 	print('Getting {}'.format(url))
+	base_netloc = params['base_netloc']
 	child_urls = []
 	bs = get_bs4_html(url, session)
 	header_links = (x['href'] for x in bs.header.find_all('a') \
@@ -94,22 +107,59 @@ def proc_url(url, base_netloc, session):
 	files_args = []
 	dirs_args = []
 	for u in files_links:
-		full_url = urljoin(base_netloc, u)
-		files_args.append((full_url, local_path, session))
+		if matches_conditions(params, u):
+			full_url = urljoin(base_netloc, u)
+			files_args.append((full_url, local_path, session))
 	for u in folders_links:
-		full_url = urljoin(base_netloc, u)
-		dirs_args.append((full_url, base_netloc, session))
+		if matches_conditions(params, u):
+			full_url = urljoin(base_netloc, u)
+			dirs_args.append((full_url, params, session))
 	del bs # free up the precious memory used by the HTML parser
 	for fa in files_args:
 		dl_file(*fa)
 	for da in dirs_args:
 		proc_url(*da)
 
-def main():
-	if len(argv) != 2:
+def parse_args(args):
+	if not args:
 		print('usage: python3 /path/to/this.py "https://mirror.url/?dir=artist"')
 		os_return(-1)
-	url = argv[1]
+	# known_args = {'parameter' : arguments count (0 or 1)}
+	known_args = {'regex' : 1, 'condition': 1}
+	parsed_args = {}
+	expect = None
+	url = ''
+	for arg in args:
+		if arg.startswith('--'):
+			if expect is not None:
+				print('Missing argument for {}'.format(expect))
+				os_return(-1)
+			arg = arg[2:]
+			if not arg in known_args.keys():
+				print('Unknown parameter: {}'.format(arg))
+				os_return(-1)
+			else:
+				subargs = known_args[arg]
+				if subargs == 1:
+					expect = arg
+				else:
+					parsed_args[expect] = True
+		elif expect:
+			parsed_args[expect] = arg
+			expect = None
+		else:
+			parsed_args['url'] = arg
+	if expect is not None:
+		print('Missing argument for {}'.format(expect))
+		os_return(-1)
+	if not 'url' in parsed_args.keys():
+		print('URL is required')
+		os_return(-1)
+	return parsed_args
+
+def main():
+	params = parse_args(argv[1:])
+	url = params['url']
 	if not '//' in url:
 		print('{} does not look like an URL. Is it missing https://?'.format(url))
 		os_return(-1)
@@ -128,8 +178,8 @@ def main():
 		'Accept' : 'text/html, */*',
 		'Accept-Language' : 'en-us'
 	})
-	base_netloc = 'https://' + urlparse(url).netloc
-	proc_url(argv[1], base_netloc, s)
+	params['base_netloc'] = 'https://' + urlparse(url).netloc
+	proc_url(url, params, s)
 
 if __name__ == '__main__':
 	main()
