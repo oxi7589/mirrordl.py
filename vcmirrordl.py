@@ -1,14 +1,13 @@
-# v.2021-08-30f
+# v.2022-01-26a
 # requires-interpreter: CPython3.5+
-# requires-lib: beautifulsoup4, requests
-# example-use: python3 ./mirrordl.py "https://5ur3kg.gq/?dir=public/Betm/15007%20%E5%AE%BFX%E8%99%8E"
+# requires-lib: requests
+# example-use: python3 ./vcmirrordl.py "https://vc.5ur3kg.gq/Betm"
 
 try:
 	import requests
-	from bs4 import BeautifulSoup
 except ImportError:
 	print('Dependencies not met. Please run:')
-	print('pip3 install requests beautifulsoup4')
+	print('pip3 install requests')
 	raise
 
 from os import _exit as os_return
@@ -37,13 +36,19 @@ def sanitize_local_path(path):
 		path = path.replace(i, '_')
 	return path
 
-def dl_file(url, local_dir, session):
+def sanitize_local_fn(path):
+	illegals = '/\\:*?"<>|'
+	for i in illegals:
+		path = path.replace(i, '_')
+	return path
+
+def dl_file(url, local_dir, local_fn, session):
 	local_dir = sanitize_local_path(local_dir)
 	force_directories(local_dir)
 	fails = 0
-	file_name = unquote(url.split('/')[-1])
+	file_name = sanitize_local_fn(local_fn)
 	try:
-		with open(local_dir + file_name, 'rb') as _:
+		with open(local_dir + '/' + file_name, 'rb') as _:
 			print('Skipped: {}'.format(file_name))
 			return
 	except FileNotFoundError:
@@ -53,7 +58,7 @@ def dl_file(url, local_dir, session):
 		sleep(2**fails - 1) # [0, 1, 3, 7, 15]
 		r = session.get(url, stream=True)
 		if r.ok:
-			with open(local_dir + file_name, 'wb') as f:
+			with open(local_dir + '/' + file_name, 'wb') as f:
 				for chunk in r.iter_content(chunk_size=8192):
 					f.write(chunk)
 			return
@@ -63,17 +68,21 @@ def dl_file(url, local_dir, session):
 			fails += 1
 	raise Exception("Can't download {}".format(url))
 
-def get_bs4_html(url, session):
+def get_api_json(url, session):
 	fails = 0
 	while fails < 5:
 		sleep(2**fails - 1) # [0, 1, 3, 7, 15]
 		r = session.get(url)
 		if r.ok:
-			r.encoding = 'utf-8'
-			return BeautifulSoup(r.text, features="html.parser")
+			j = r.json()
+			if not 'folder' in j:
+				raise Exception("Not a folder")
+			return j
 		else:
 			print('Error: HTTP status code {} for {} [{}]' \
 				.format(r.status_code, url, fails + 1))
+			if r.status_code == 404:
+				raise Exception("Resource not found (404)")
 			fails += 1
 	raise Exception("Can't get {}".format(url))
 
@@ -88,32 +97,32 @@ def matches_conditions(params, url):
 		return bool(match)
 	return bool(eval(params['condition']))
 
-def proc_url(url, params, session):
-	print('Getting {}'.format(url))
+def proc_url(path, params, session):
+	print('Processing /{}'.format(path))
 	base_netloc = params['base_netloc']
-	bs = get_bs4_html(url, session)
-	header_links = (x['href'] for x in bs.header.find_all('a') \
-		if '?dir=' in x.get('href'))
-	self_href = list(header_links)[-1] + '/' # used to prevent going up to '..'
-	local_path = unquote(self_href.split('?dir=')[1])
-	bs.header.decompose()
-	bs.footer.decompose()
-	files_links = (x['href'] for x in bs.find_all('a') \
-		if x.get('href') and not '?dir' in x['href'])
-	folders_links = (x['href'] for x in bs.find_all('a') \
-		if x.get('href') \
-		and x['href'].startswith(self_href))
+	api_url = base_netloc + '/api?path=/' + path
+	j_fld = get_api_json(api_url, session)['folder']
+	if not 'value' in j_fld:
+		return
+	j_fldval = j_fld['value']
+	# list of (name, download_url) tuples
+	files_links = ((z['name'], \
+					z['@microsoft.graph.downloadUrl']) \
+				   for z in j_fldval if 'file' in z)
+	# list of subfolder names
+	folders_links = (z['name'] \
+					 for z in j_fldval if 'folder' in z)
 	files_args = []
 	dirs_args = []
-	for u in files_links:
-		if matches_conditions(params, u):
-			full_url = urljoin(base_netloc, u)
-			files_args.append((full_url, local_path, session))
-	for u in folders_links:
-		if matches_conditions(params, u):
-			full_url = urljoin(base_netloc, u)
-			dirs_args.append((full_url, params, session))
-	del bs # free up the precious memory used by the HTML parser
+	for name, down_url in files_links:
+		full_rp = '/'.join([path, name])
+		if matches_conditions(params, full_rp):
+			# url, local_dir, local_fn, session
+			files_args.append((down_url, path, name, session))
+	for name in folders_links:
+		full_rp = '/'.join([path, name])
+		if matches_conditions(params, full_rp):
+			dirs_args.append((full_rp, params, session))
 	for fa in files_args:
 		dl_file(*fa)
 	for da in dirs_args:
@@ -121,10 +130,10 @@ def proc_url(url, params, session):
 
 def parse_args(args):
 	if not args:
-		print('usage: python3 /path/to/this.py "https://mirror.url/?dir=artist"')
+		print('usage: python3 /path/to/this.py "https://mirror.url/Artist"')
 		os_return(-1)
 	# known_args = {'parameter' : arguments count (0 or 1)}
-	known_args = {'regex' : 1, 'condition': 1}
+	known_args = {'regex' : 1, 'condition': 1, 'allow-unknown-source': 0}
 	parsed_args = {}
 	expect = None
 	url = ''
@@ -162,27 +171,24 @@ def main():
 	if not '//' in url:
 		print('{} does not look like an URL. Is it missing https://?'.format(url))
 		os_return(-1)
-	if '//mirror.5ur3kg.gq' in url:
-		print('This tool expects URLs to be from 5ur3kg.gq, not mirror.5ur3kg.gq')
-		os_return(-1)
-	if '//vc.5ur3kg.gq' in url:
-		print('This tool expects URLs to be from 5ur3kg.gq, not vc.5ur3kg.gq')
-		print('Use vcmirrordl.py instead')
-		os_return(-1)
-	if '//adf.rocks' in url:
-		print('This tool expects URLs to be from 5ur3kg.gq, not adf.rocks')
-		os_return(-1)
-	if not '?dir=' in url:
-		print('Could not find a "?dir=" part. Is this a directory?')
-		os_return(-1)
+	if not '//vc.5ur3kg.gq' in url:
+		if not 'allow-unknown-source' in params:
+			print('This tool expects URLs to be from vc.5ur3kg.gq')
+			print('Note: use --allow-unknown-source parameter to continue anyway,')
+			print('      if you know what you are doing')
+			os_return(-1)
 	s = requests.Session()
 	s.headers.update({
-		'User-Agent' : 'Mozilla/5.0 (mirrordl/0.0)',
-		'Accept' : 'text/html, */*',
+		'User-Agent' : 'Mozilla/5.0 mirrordl/0.0',
+		'Accept' : 'application/json, */*',
 		'Accept-Language' : 'en-us'
 	})
-	params['base_netloc'] = 'https://' + urlparse(url).netloc
-	proc_url(url, params, s)
+	upr = urlparse(url)
+	params['base_netloc'] = upr.scheme + '://' + upr.netloc
+	try:
+		proc_url(upr.path.strip('/'), params, s)
+	except Exception as e:
+		print('Aborted. {}'.format(e))
 
 if __name__ == '__main__':
 	main()
