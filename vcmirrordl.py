@@ -1,4 +1,4 @@
-# v.2022-01-26a
+# v.2022-02-04b
 # requires-interpreter: CPython3.5+
 # requires-lib: requests
 # example-use: python3 ./vcmirrordl.py "https://vc.5ur3kg.gq/Betm"
@@ -14,7 +14,7 @@ from os import _exit as os_return
 from os import mkdir
 from sys import argv
 from time import sleep
-from urllib.parse import urljoin, urlparse, unquote
+from urllib.parse import urljoin, urlparse, unquote, quote
 import re
 
 def mkdir_if_not_exists(d):
@@ -100,7 +100,7 @@ def matches_conditions(params, url):
 def proc_url(path, params, session):
 	print('Processing /{}'.format(path))
 	base_netloc = params['base_netloc']
-	api_url = base_netloc + '/api?path=/' + path
+	api_url = base_netloc + '/api?path=/' + quote(path)
 	j_fld = get_api_json(api_url, session)['folder']
 	if not 'value' in j_fld:
 		return
@@ -186,7 +186,7 @@ def main():
 	upr = urlparse(url)
 	params['base_netloc'] = upr.scheme + '://' + upr.netloc
 	try:
-		proc_url(upr.path.strip('/'), params, s)
+		proc_url(unquote(upr.path.strip('/')), params, s)
 	except Exception as e:
 		print('Aborted. {}'.format(e))
 
